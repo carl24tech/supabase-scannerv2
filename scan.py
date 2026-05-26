@@ -1,180 +1,176 @@
-import sys
-import os
+import sys as _sys
+import os as _os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 
-import config
-from scanner.client import SupabaseClient
-from scanner.cli import parse_args, module_active
+import config as _cfg
+from scanner.client import SupabaseClient as _Client
+from scanner.cli import parse_args as _parse, module_active as _active
 from scanner import (
-    jwt_analyzer,
-    table_scanner,
-    storage_scanner,
-    auth_scanner,
-    headers_scanner,
-    injection_scanner,
-    edge_scanner,
-    rls_analyzer,
-    idor_scanner,
-    infra_scanner,
-    scoring,
-    reporter,
+    jwt_analyzer as _A,
+    table_scanner as _B,
+    storage_scanner as _C,
+    auth_scanner as _D,
+    headers_scanner as _E,
+    injection_scanner as _F,
+    edge_scanner as _G,
+    rls_analyzer as _H,
+    idor_scanner as _I,
+    infra_scanner as _J,
+    scoring as _K,
+    reporter as _L,
 )
 
 
-def validate(url, key):
-    errors = []
-    if not url or "your-project-ref" in url:
-        errors.append("SUPABASE_URL is not configured")
-    if not key or "your-anon-key" in key:
-        errors.append("ANON_KEY is not configured")
-    return errors
+def _chk(_a, _b):
+    _x = []
+    if not _a or "your-project-ref" in _a:
+        _x.append("SUPABASE_URL is not configured")
+    if not _b or "your-anon-key" in _b:
+        _x.append("ANON_KEY is not configured")
+    return _x
 
 
-def step(msg, quiet=False):
-    if not quiet:
-        print(f"  \033[96m→\033[0m {msg}...")
+def _out(_m, _q=False):
+    if not _q:
+        print(f"  \033[96m→\033[0m {_m}...")
 
 
-def run():
-    parsed = parse_args()
-
-    url     = parsed["url"]     or getattr(config, "SUPABASE_URL", "")
-    key     = parsed["key"]     or getattr(config, "ANON_KEY", "")
-    svc_key = parsed["service_key"] or getattr(config, "SERVICE_ROLE_KEY", "") or ""
-    quiet   = parsed["quiet"]
-
-    errors = validate(url, key)
-    if errors:
+def _go():
+    _p = _parse()
+    _u = _p["url"] or getattr(_cfg, "SUPABASE_URL", "")
+    _k = _p["key"] or getattr(_cfg, "ANON_KEY", "")
+    _sk = _p["service_key"] or getattr(_cfg, "SERVICE_ROLE_KEY", "") or ""
+    _q = _p["quiet"]
+    _e = _chk(_u, _k)
+    if _e:
         print("\033[91m[ERROR] Fix config.py before running:\033[0m")
-        for e in errors:
-            print(f"  - {e}")
-        sys.exit(1)
-
-    url = url.rstrip("/")
-    all_findings = []
-
-    if not quiet:
-        print(f"\n\033[1mStarting scan against:\033[0m {url}\n")
-
-    def active(name):
-        return module_active(name, parsed)
-
-    if active("jwt"):
-        step("Analyzing JWT token(s)", quiet)
-        all_findings += jwt_analyzer.analyze(key, label="anon_key")
-        if svc_key:
-            all_findings += jwt_analyzer.analyze(svc_key, label="service_role_key")
-
-    if active("infra"):
-        step("Checking TLS", quiet)
-        all_findings += infra_scanner.check_tls(url, label="anon")
-
-    if active("headers"):
-        step("Checking HTTP security headers", quiet)
-        all_findings += headers_scanner.scan_headers(url, key, label="anon")
-
-    anon = SupabaseClient(url, key)
-
-    if active("infra"):
-        step("Probing infrastructure endpoints", quiet)
-        all_findings += infra_scanner.scan_endpoints(url, key, label="anon")
-        all_findings += infra_scanner.scan_common_files(url, label="anon")
-
-    if active("graphql"):
-        step("Testing GraphQL introspection", quiet)
-        all_findings += infra_scanner.scan_graphql_introspection(url, key, label="anon")
-
-    if active("tables"):
-        step("Discovering and reading tables via schema", quiet)
-        all_findings += edge_scanner.scan_postgrest_info(anon, label="anon")
-        table_findings, tables = table_scanner.scan_tables(anon, label="anon")
-        all_findings += table_findings
-    else:
-        tables = []
-
-    if active("rpc"):
-        step("Probing RPC functions", quiet)
-        all_findings += table_scanner.scan_rpc(anon, label="anon")
-
-    if active("bruteforce"):
-        step("Brute-forcing common table names", quiet)
-        brute_findings, brute_tables = table_scanner.brute_common_tables(anon, label="anon")
-        all_findings += brute_findings
-        tables = list(set(tables + brute_tables))
-
-    if active("rls"):
-        step("Analyzing RLS policies and row exposure", quiet)
-        all_findings += rls_analyzer.scan_rls(anon, tables, label="anon")
-        all_findings += rls_analyzer.estimate_data_exposure(anon, tables, label="anon")
-
-    if active("idor"):
-        step("Testing for IDOR and horizontal privilege escalation", quiet)
-        all_findings += idor_scanner.scan_idor(anon, tables, label="anon")
-        all_findings += idor_scanner.scan_horizontal_privilege_escalation(anon, tables, label="anon")
-
-    if active("injection"):
-        step("Testing PostgREST injection vectors", quiet)
-        all_findings += injection_scanner.scan_injections(anon, tables, label="anon")
-
-    if active("mass_assignment"):
-        step("Testing mass assignment on exposed tables", quiet)
-        all_findings += injection_scanner.scan_mass_assignment(anon, tables, label="anon")
-
-    if active("storage"):
-        step("Scanning storage buckets", quiet)
-        all_findings += storage_scanner.scan_storage(anon, label="anon")
-
-    if active("auth"):
-        step("Probing auth configuration", quiet)
-        all_findings += auth_scanner.scan_auth_config(anon, label="anon")
-        step("Testing email enumeration", quiet)
-        all_findings += auth_scanner.scan_email_enumeration(anon, label="anon")
-        step("Probing auth endpoints and brute-force protection", quiet)
-        all_findings += auth_scanner.scan_auth_endpoints(anon, label="anon")
-
-    if active("magic_link"):
-        step("Testing magic link endpoint", quiet)
-        all_findings += auth_scanner.scan_magic_link(anon, label="anon")
-
-    if active("edges"):
-        step("Probing edge functions", quiet)
-        all_findings += edge_scanner.scan_edge_functions(anon, label="anon")
-
-    if active("realtime"):
-        step("Checking realtime endpoint", quiet)
-        all_findings += edge_scanner.scan_realtime(anon, label="anon")
-
-    if svc_key:
-        if not quiet:
+        for _x in _e:
+            print(f"  - {_x}")
+        _sys.exit(1)
+    _u = _u.rstrip("/")
+    _f = []
+    if not _q:
+        print(f"\n\033[1mStarting scan against:\033[0m {_u}\n")
+    
+    def _mod(_n):
+        return _active(_n, _p)
+    
+    # JWT
+    if _mod("jwt"):
+        _out("Analyzing JWT token(s)", _q)
+        _f += _A.analyze(_k, label="anon_key")
+        if _sk:
+            _f += _A.analyze(_sk, label="service_role_key")
+    
+    # Infra
+    if _mod("infra"):
+        _out("Checking TLS", _q)
+        _f += _J.check_tls(_u, label="anon")
+    
+    if _mod("headers"):
+        _out("Checking HTTP security headers", _q)
+        _f += _E.scan_headers(_u, _k, label="anon")
+    
+    _cli = _Client(_u, _k)
+    
+    if _mod("infra"):
+        _out("Probing infrastructure endpoints", _q)
+        _f += _J.scan_endpoints(_u, _k, label="anon")
+        _f += _J.scan_common_files(_u, label="anon")
+    
+    if _mod("graphql"):
+        _out("Testing GraphQL introspection", _q)
+        _f += _J.scan_graphql_introspection(_u, _k, label="anon")
+    
+    _tbls = []
+    if _mod("tables"):
+        _out("Discovering and reading tables via schema", _q)
+        _f += _G.scan_postgrest_info(_cli, label="anon")
+        _tbl_f, _tbls = _B.scan_tables(_cli, label="anon")
+        _f += _tbl_f
+    
+    if _mod("rpc"):
+        _out("Probing RPC functions", _q)
+        _f += _B.scan_rpc(_cli, label="anon")
+    
+    if _mod("bruteforce"):
+        _out("Brute-forcing common table names", _q)
+        _bf_f, _bf_t = _B.brute_common_tables(_cli, label="anon")
+        _f += _bf_f
+        _tbls = list(set(_tbls + _bf_t))
+    
+    # RLS
+    if _mod("rls"):
+        _out("Analyzing RLS policies and row exposure", _q)
+        _f += _H.scan_rls(_cli, _tbls, label="anon")
+        _f += _H.estimate_data_exposure(_cli, _tbls, label="anon")
+    
+    if _mod("idor"):
+        _out("Testing for IDOR and horizontal privilege escalation", _q)
+        _f += _I.scan_idor(_cli, _tbls, label="anon")
+        _f += _I.scan_horizontal_privilege_escalation(_cli, _tbls, label="anon")
+    
+    if _mod("injection"):
+        _out("Testing PostgREST injection vectors", _q)
+        _f += _F.scan_injections(_cli, _tbls, label="anon")
+    
+    if _mod("mass_assignment"):
+        _out("Testing mass assignment on exposed tables", _q)
+        _f += _F.scan_mass_assignment(_cli, _tbls, label="anon")
+    
+    if _mod("storage"):
+        _out("Scanning storage buckets", _q)
+        _f += _C.scan_storage(_cli, label="anon")
+    
+    if _mod("auth"):
+        _out("Probing auth configuration", _q)
+        _f += _D.scan_auth_config(_cli, label="anon")
+        _out("Testing email enumeration", _q)
+        _f += _D.scan_email_enumeration(_cli, label="anon")
+        _out("Probing auth endpoints and brute-force protection", _q)
+        _f += _D.scan_auth_endpoints(_cli, label="anon")
+    
+    if _mod("magic_link"):
+        _out("Testing magic link endpoint", _q)
+        _f += _D.scan_magic_link(_cli, label="anon")
+    
+    if _mod("edges"):
+        _out("Probing edge functions", _q)
+        _f += _G.scan_edge_functions(_cli, label="anon")
+    
+    if _mod("realtime"):
+        _out("Checking realtime endpoint", _q)
+        _f += _G.scan_realtime(_cli, label="anon")
+    
+    if _sk:
+        if not _q:
             print(f"\n  \033[93m→\033[0m Re-scanning with service role key...")
-        svc = SupabaseClient(url, svc_key)
-        if active("tables"):
-            svc_table_findings, _ = table_scanner.scan_tables(svc, label="service_role")
-            all_findings += svc_table_findings
-        if active("storage"):
-            all_findings += storage_scanner.scan_storage(svc, label="service_role")
-        if active("auth"):
-            all_findings += auth_scanner.scan_auth_endpoints(svc, label="service_role")
-
-    reporter.print_findings(all_findings, url)
-    scoring.print_score_card(all_findings)
-    score_data = scoring.score_to_dict(all_findings)
-
-    saved = []
-    if not parsed["no_json"]:
-        saved.append(("JSON    ", reporter.save_json(all_findings, url, score_data=score_data)))
-    if not parsed["no_md"]:
-        saved.append(("Markdown", reporter.save_markdown(all_findings, url)))
-    if not parsed["no_html"]:
-        saved.append(("HTML    ", reporter.save_html(all_findings, url)))
-
-    if saved and not quiet:
+        _svc = _Client(_u, _sk)
+        if _mod("tables"):
+            _svc_f, _ = _B.scan_tables(_svc, label="service_role")
+            _f += _svc_f
+        if _mod("storage"):
+            _f += _C.scan_storage(_svc, label="service_role")
+        if _mod("auth"):
+            _f += _D.scan_auth_endpoints(_svc, label="service_role")
+    
+    _L.print_findings(_f, _u)
+    _K.print_score_card(_f)
+    _sd = _K.score_to_dict(_f)
+    _saved = []
+    if not _p["no_json"]:
+        _saved.append(("JSON    ", _L.save_json(_f, _u, score_data=_sd)))
+    if not _p["no_md"]:
+        _saved.append(("Markdown", _L.save_markdown(_f, _u)))
+    if not _p["no_html"]:
+        _saved.append(("HTML    ", _L.save_html(_f, _u)))
+    if _saved and not _q:
         print("  Reports saved:")
-        for fmt, path in saved:
-            print(f"    {fmt} → {path}")
+        for _fmt, _path in _saved:
+            print(f"    {_fmt} → {_path}")
         print()
 
 
 if __name__ == "__main__":
-    run()
+    _go()
